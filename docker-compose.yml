@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:16
+    container_name: go-idp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  idp-bootstrap:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-idp-bootstrap
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres?sslmode=disable
+      MIGRATIONS_DIR: /app/migrations
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -e
+        idpctl user add --username alice --password password123 --display-name "Alice Example" --email alice@example.com
+        idpctl client add --client-id demo-client --redirect-uri "http://localhost:8081/callback" --grant-types "authorization_code,password" --scopes "openid"
+        idpctl samlsp add --issuer "http://sp.example/metadata" --acs-url "http://sp.example/acs" --audience-uri "http://sp.example/audience" --name-id-format "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
+    restart: "no"
+
+  idp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-idp
+    depends_on:
+      db:
+        condition: service_healthy
+      idp-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/postgres?sslmode=disable
+      PUBLIC_ISSUER_URL: http://localhost:8080
+      LISTEN_ADDR: :8080
+      MIGRATIONS_DIR: /app/migrations
+      DEV_KEYS_DIR: /app/dev-keys
+      COOKIE_SECURE: "false"
+      SESSION_TTL: 24h
+      JWT_ACCESS_TTL: 15m
+      JWT_ID_TTL: 15m
+    ports:
+      - "8080:8080"
+    volumes:
+      - devkeys:/app/dev-keys
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  devkeys:
+

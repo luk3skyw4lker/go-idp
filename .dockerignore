@@ -1,0 +1,17 @@
+.git
+.gitignore
+.cursor
+.idea
+.vscode
+
+tmp
+dist
+bin
+coverage.out
+
+dev-keys
+test-dev-keys
+
+*.log
+*.tmp
+
