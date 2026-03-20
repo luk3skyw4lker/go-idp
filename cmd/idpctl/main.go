@@ -8,17 +8,12 @@ import (
 	"os"
 	"strings"
 
+	"github.com/luk3skyw4lker/go-idp/internal/config"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
-	"github.com/ilyakaznacheev/cleanenv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
-
-type cliConfig struct {
-	DatabaseURL   string `env:"DATABASE_URL" env-required:"true"`
-	MigrationsDir string `env:"MIGRATIONS_DIR" env-default:"./migrations"`
-}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -95,9 +90,9 @@ func main() {
 	}
 }
 
-func loadCLIConfig() cliConfig {
-	var cfg cliConfig
-	if err := cleanenv.ReadEnv(&cfg); err != nil {
+func loadCLIConfig() config.CLIConfig {
+	cfg, err := config.LoadCLI()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "config error: %v\n", err)
 		os.Exit(1)
 	}

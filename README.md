@@ -50,7 +50,24 @@ SAML (SP-initiated)
 
 ## Configuration
 
-The IdP uses environment variables (loaded via `cleanenv`).
+The IdP and `idpctl` support either:
+
+- root-level `config.yml` / `config.yaml`
+- environment variables (env values override YAML values)
+
+Example `config.yml`:
+
+```yaml
+database_url: 'postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable'
+public_issuer_url: 'http://localhost:8080'
+listen_addr: ':8080'
+cookie_secure: false
+session_ttl: '24h'
+jwt_access_ttl: '15m'
+jwt_id_ttl: '15m'
+dev_keys_dir: './dev-keys'
+migrations_dir: './migrations'
+```
 
 Required
 
@@ -427,4 +444,3 @@ Run:
 go test ./... -run TestOIDC_AuthorizationCode_PKCE -v
 go test ./... -run TestSAML_SPInitiated_POST -v
 ```
-
