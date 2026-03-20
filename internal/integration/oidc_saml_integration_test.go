@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,15 +23,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
-
-func requireEnv(t *testing.T, k string) string {
-	t.Helper()
-	v := strings.TrimSpace(os.Getenv(k))
-	if v == "" {
-		t.Skipf("env %s not set", k)
-	}
-	return v
-}
 
 type testSetup struct {
 	cfg        config.Config
@@ -50,19 +40,26 @@ type testSetup struct {
 
 func setup(t *testing.T) testSetup {
 	t.Helper()
-	dbURL := requireEnv(t, "DATABASE_URL")
-	issuer := requireEnv(t, "PUBLIC_ISSUER_URL")
-
-	cfg := config.Config{
-		ListenAddr:       ":0",
-		PublicIssuerURL: strings.TrimRight(issuer, "/"),
-		DatabaseURL:      dbURL,
-		CookieSecure:     false,
-		SessionTTL:       24 * time.Hour,
-		JWTAccessTTL:     15 * time.Minute,
-		JWTIDTTL:         15 * time.Minute,
-		DevKeysDir:       "./test-dev-keys",
-		MigrationsDir:    "./migrations",
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("integration config load failed (set envs or root config.yml): %v", err)
+	}
+	cfg.ListenAddr = ":0"
+	cfg.PublicIssuerURL = strings.TrimRight(cfg.PublicIssuerURL, "/")
+	if cfg.MigrationsDir == "" {
+		cfg.MigrationsDir = "./migrations"
+	}
+	if cfg.SessionTTL == 0 {
+		cfg.SessionTTL = 24 * time.Hour
+	}
+	if cfg.JWTAccessTTL == 0 {
+		cfg.JWTAccessTTL = 15 * time.Minute
+	}
+	if cfg.JWTIDTTL == 0 {
+		cfg.JWTIDTTL = 15 * time.Minute
+	}
+	if cfg.DevKeysDir == "" {
+		cfg.DevKeysDir = "./test-dev-keys"
 	}
 
 	ctx := context.Background()
@@ -280,6 +277,110 @@ func TestOIDC_AuthorizationCode_PKCE(t *testing.T) {
 	}
 
 	_ = authorizeURL
+}
+
+func TestOAuth2_PasswordGrant(t *testing.T) {
+	s := setup(t)
+
+	tests := []struct {
+		name           string
+		form           url.Values
+		wantStatusCode int
+		wantIDToken    bool
+	}{
+		{
+			name: "access token only when scope omitted",
+			form: url.Values{
+				"grant_type": {"password"},
+				"username":   {s.username},
+				"password":   {s.password},
+				"client_id":  {s.clientID},
+			},
+			wantStatusCode: http.StatusOK,
+			wantIDToken:    false,
+		},
+		{
+			name: "openid without nonce is rejected",
+			form: url.Values{
+				"grant_type": {"password"},
+				"username":   {s.username},
+				"password":   {s.password},
+				"client_id":  {s.clientID},
+				"scope":      {"openid"},
+			},
+			wantStatusCode: http.StatusBadRequest,
+			wantIDToken:    false,
+		},
+		{
+			name: "openid with nonce returns id_token",
+			form: url.Values{
+				"grant_type": {"password"},
+				"username":   {s.username},
+				"password":   {s.password},
+				"client_id":  {s.clientID},
+				"scope":      {"openid"},
+				"nonce":      {"it_nonce_password"},
+			},
+			wantStatusCode: http.StatusOK,
+			wantIDToken:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(tt.form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			resp := doRequest(t, s.app, req)
+
+			if resp.StatusCode != tt.wantStatusCode {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status: got=%d want=%d body=%s", resp.StatusCode, tt.wantStatusCode, string(b))
+			}
+
+			if resp.StatusCode != http.StatusOK {
+				return
+			}
+
+			var body map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode token response: %v", err)
+			}
+
+			_, hasAccess := body["access_token"]
+			if !hasAccess {
+				t.Fatalf("missing access_token")
+			}
+			_, hasID := body["id_token"]
+			if hasID != tt.wantIDToken {
+				t.Fatalf("id_token presence mismatch: got=%v want=%v", hasID, tt.wantIDToken)
+			}
+		})
+	}
+}
+
+func TestCoreEndpoints(t *testing.T) {
+	s := setup(t)
+
+	type endpointCase struct {
+		path string
+	}
+	cases := []endpointCase{
+		{path: "/healthz"},
+		{path: "/.well-known/openid-configuration"},
+		{path: "/jwks"},
+		{path: "/saml/metadata"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			resp := doRequest(t, s.app, req)
+			if resp.StatusCode != http.StatusOK {
+				b, _ := io.ReadAll(resp.Body)
+				t.Fatalf("endpoint %s status: %d body=%s", tc.path, resp.StatusCode, string(b))
+			}
+		})
+	}
 }
 
 func TestSAML_SPInitiated_POST(t *testing.T) {

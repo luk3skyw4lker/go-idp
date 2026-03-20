@@ -36,25 +36,33 @@ type CLIConfig struct {
 
 func Load() (Config, error) {
 	var cfg Config
-	if err := readWithOptionalYAML(&cfg); err != nil {
+	sourcePath, err := readWithOptionalYAML(&cfg)
+	if err != nil {
 		return Config{}, err
+	}
+	if sourcePath != "" && cfg.MigrationsDir != "" && !filepath.IsAbs(cfg.MigrationsDir) {
+		cfg.MigrationsDir = filepath.Join(filepath.Dir(sourcePath), cfg.MigrationsDir)
 	}
 	return cfg, nil
 }
 
 func LoadCLI() (CLIConfig, error) {
 	var cfg CLIConfig
-	if err := readWithOptionalYAML(&cfg); err != nil {
+	sourcePath, err := readWithOptionalYAML(&cfg)
+	if err != nil {
 		return CLIConfig{}, err
+	}
+	if sourcePath != "" && cfg.MigrationsDir != "" && !filepath.IsAbs(cfg.MigrationsDir) {
+		cfg.MigrationsDir = filepath.Join(filepath.Dir(sourcePath), cfg.MigrationsDir)
 	}
 	return cfg, nil
 }
 
-func readWithOptionalYAML(target any) error {
+func readWithOptionalYAML(target any) (string, error) {
 	if p, ok := firstExistingConfigFile(); ok {
-		return cleanenv.ReadConfig(p, target)
+		return p, cleanenv.ReadConfig(p, target)
 	}
-	return cleanenv.ReadEnv(target)
+	return "", cleanenv.ReadEnv(target)
 }
 
 func firstExistingConfigFile() (string, bool) {
@@ -62,10 +70,23 @@ func firstExistingConfigFile() (string, bool) {
 		"config.yml",
 		"config.yaml",
 	}
-	for _, name := range candidates {
-		p := filepath.Clean(name)
-		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-			return p, true
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+
+	// Search current directory and parent directories so package-level tests
+	// still resolve a repo-root config file.
+	for dir := wd; ; dir = filepath.Dir(dir) {
+		for _, name := range candidates {
+			p := filepath.Join(dir, name)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p, true
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
 		}
 	}
 	return "", false
