@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -102,7 +104,7 @@ func loadCLIConfig() config.CLIConfig {
 func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
   idpctl user add --username <u> --password <p> [--display-name <d>] [--email <e>]
-  idpctl client add --client-id <id> --redirect-uri <url> [--redirect-uri <url>...] [--grant-types <csv>] [--scopes <csv>]
+  idpctl client add --client-id <id> --redirect-uri <url> [--redirect-uri <url>...] [--grant-types <csv>] [--scopes <csv>] [--public] [--client-secret <s>] [--token-endpoint-auth-method <m>]
   idpctl samlsp add --issuer <entityId> --acs-url <url> [--audience-uri <uri>] [--name-id-format <format>]
 
 Env:
@@ -158,11 +160,16 @@ func seedClientAdd(ctx context.Context, store *postgres.Store) error {
 	fs.Var(&redirectURIs, "redirect-uri", "redirect URI (repeatable)")
 	var grantTypes = fs.String("grant-types", "authorization_code,password", "comma-separated grant types")
 	var scopes = fs.String("scopes", "openid", "comma-separated scopes")
-	var authMethod = fs.String("token-endpoint-auth-method", "none", "token_endpoint_auth_method")
+	var public = fs.Bool("public", false, "public client (no client_secret; use for dev/PKCE-only flows)")
+	var clientSecretPlain = fs.String("client-secret", "", "store hash of this secret instead of generating (cannot combine with --public)")
+	var authMethod = fs.String("token-endpoint-auth-method", "", "token_endpoint_auth_method (default: none if --public, else client_secret_post)")
 	_ = fs.Parse(os.Args[3:])
 
 	if *clientID == "" || len(redirectURIs.values()) == 0 {
 		return fmt.Errorf("client-id and at least one redirect-uri are required")
+	}
+	if *public && strings.TrimSpace(*clientSecretPlain) != "" {
+		return fmt.Errorf("cannot use --client-secret with --public")
 	}
 
 	redirectJSONBytes, err := json.Marshal(redirectURIs.values())
@@ -170,11 +177,47 @@ func seedClientAdd(ctx context.Context, store *postgres.Store) error {
 		return err
 	}
 
+	var secretHash *string
+	var generatedPlain string
+
+	switch {
+	case *public:
+		secretHash = nil
+	case strings.TrimSpace(*clientSecretPlain) != "":
+		h, err := bcrypt.GenerateFromPassword([]byte(strings.TrimSpace(*clientSecretPlain)), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		s := string(h)
+		secretHash = &s
+	default:
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return err
+		}
+		generatedPlain = base64.RawURLEncoding.EncodeToString(raw)
+		h, err := bcrypt.GenerateFromPassword([]byte(generatedPlain), bcrypt.DefaultCost)
+		if err != nil {
+			return err
+		}
+		s := string(h)
+		secretHash = &s
+	}
+
+	tokenAuth := strings.TrimSpace(*authMethod)
+	if tokenAuth == "" {
+		if *public {
+			tokenAuth = "none"
+		} else {
+			tokenAuth = "client_secret_post"
+		}
+	}
+
 	client := postgres.Client{
 		ClientID:                *clientID,
-		ClientSecretHash:        nil, // public / testing clients
+		ClientSecretHash:        secretHash,
 		RedirectURIsJSON:        string(redirectJSONBytes),
-		TokenEndpointAuthMethod: *authMethod,
+		TokenEndpointAuthMethod: tokenAuth,
 		AllowedGrantTypes:       splitCSV(*grantTypes),
 		AllowedScopes:           splitCSV(*scopes),
 	}
@@ -184,6 +227,10 @@ func seedClientAdd(ctx context.Context, store *postgres.Store) error {
 	}
 
 	fmt.Printf("client upserted: %s\n", *clientID)
+	if generatedPlain != "" {
+		fmt.Fprintf(os.Stderr, "\nSave this client_secret now; it will not be shown again.\n")
+		fmt.Printf("client_secret=%s\n", generatedPlain)
+	}
 	return nil
 }
 

@@ -35,7 +35,7 @@ services:
       - |
         set -e
         idpctl user add --username alice --password password123 --display-name "Alice Example" --email alice@example.com
-        idpctl client add --client-id demo-client --redirect-uri "http://localhost:8081/callback" --grant-types "authorization_code,password" --scopes "openid"
+        idpctl client add --public --client-id demo-client --redirect-uri "http://localhost:8081/callback" --grant-types "authorization_code,password" --scopes "openid"
         idpctl samlsp add --issuer "http://sp.example/metadata" --acs-url "http://sp.example/acs" --audience-uri "http://sp.example/audience" --name-id-format "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
     restart: "no"
 

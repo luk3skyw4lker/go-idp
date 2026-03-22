@@ -111,6 +111,7 @@ Compose bootstrap seeds:
 - User: `alice` / `password123`
 - OAuth2/OIDC client:
   - `client_id`: `demo-client`
+  - **public client** (`--public`): no `client_secret` (suitable for local dev / PKCE)
   - redirect URI: `http://localhost:8081/callback`
   - grant types: `authorization_code,password`
   - scopes: `openid`
@@ -209,16 +210,31 @@ This IdP enforces:
 - `redirect_uri` must be present in the client's stored `redirect_uris`
 - `scope` must be within the client's `allowed_scopes`
 - for OIDC `id_token`, `openid` scope requires a `nonce` parameter
+- if the client has a **stored secret** (confidential client), `POST /token` must include a matching `client_secret`
 
-Example client:
+**Confidential client** (default): `idpctl` generates a random `client_secret`, bcrypt-hashes it, stores the hash, and prints the plain secret once (save it).
 
 ```bash
 go run ./cmd/idpctl client add \
+  --client-id my-app \
+  --redirect-uri "http://localhost:8081/callback" \
+  --grant-types "authorization_code,password" \
+  --scopes "openid"
+# copy client_secret=... from the output; use it on /token as client_secret
+```
+
+**Public client** (no secret, e.g. dev / browser-only PKCE):
+
+```bash
+go run ./cmd/idpctl client add \
+  --public \
   --client-id demo-client \
   --redirect-uri "http://localhost:8081/callback" \
   --grant-types "authorization_code,password" \
   --scopes "openid"
 ```
+
+Optional: `--client-secret <value>` hashes a secret you choose instead of generating one (cannot be used with `--public`).
 
 Repeat `--redirect-uri` multiple times for multiple allowed redirect URIs.
 
@@ -249,6 +265,7 @@ Use this section when you want your own local app (frontend/backend) to use this
 
 ```bash
 go run ./cmd/idpctl client add \
+  --public \
   --client-id my-local-app \
   --redirect-uri "http://localhost:3000/auth/callback" \
   --grant-types "authorization_code" \

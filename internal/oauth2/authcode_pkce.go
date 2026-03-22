@@ -194,6 +194,14 @@ func (h *Handlers) tokenAuthorizationCode(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).SendString("invalid code_verifier")
 	}
 
+	client, err := h.store.GetClientByClientID(ctx, authCode.ClientID)
+	if err != nil {
+		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_id")
+	}
+	if err := h.requireClientSecret(c, client); err != nil {
+		return err
+	}
+
 	accessToken := randomToken(40)
 	expiresIn := int(h.cfg.JWTAccessTTL.Seconds())
 
@@ -255,6 +263,10 @@ func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).SendString("invalid credentials")
 	}
 
+	if err := h.requireClientSecret(c, client); err != nil {
+		return err
+	}
+
 	accessToken := randomToken(40)
 	expiresIn := int(h.cfg.JWTAccessTTL.Seconds())
 
@@ -279,6 +291,21 @@ func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(resp)
+}
+
+// requireClientSecret enforces client_secret for confidential clients (client_secret_hash set).
+func (h *Handlers) requireClientSecret(c *fiber.Ctx, client postgres.Client) error {
+	if client.ClientSecretHash == nil || strings.TrimSpace(*client.ClientSecretHash) == "" {
+		return nil
+	}
+	provided := c.FormValue("client_secret")
+	if provided == "" {
+		return c.Status(fiber.StatusUnauthorized).SendString("missing client_secret")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(*client.ClientSecretHash), []byte(provided)); err != nil {
+		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_secret")
+	}
+	return nil
 }
 
 func pkceS256(codeVerifier string) string {
