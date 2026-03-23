@@ -30,8 +30,9 @@ type Config struct {
 }
 
 type CLIConfig struct {
-	DatabaseURL   string `yaml:"database_url" env:"DATABASE_URL" env-required:"true"`
-	MigrationsDir string `yaml:"migrations_dir" env:"MIGRATIONS_DIR" env-default:"./migrations"`
+	PublicIssuerURL string `yaml:"public_issuer_url" env:"PUBLIC_ISSUER_URL"`
+	DatabaseURL     string `yaml:"database_url" env:"DATABASE_URL" env-required:"true"`
+	MigrationsDir   string `yaml:"migrations_dir" env:"MIGRATIONS_DIR" env-default:"./migrations"`
 }
 
 func Load() (Config, error) {

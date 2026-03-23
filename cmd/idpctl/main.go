@@ -63,7 +63,7 @@ func main() {
 		}
 		switch os.Args[2] {
 		case "add":
-			if err := seedClientAdd(ctx, store); err != nil {
+			if err := seedClientAdd(ctx, store, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "client add error: %v\n", err)
 				os.Exit(1)
 			}
@@ -78,7 +78,7 @@ func main() {
 		}
 		switch os.Args[2] {
 		case "add":
-			if err := seedSamlSPAdd(ctx, store); err != nil {
+			if err := seedSamlSPAdd(ctx, store, cfg); err != nil {
 				fmt.Fprintf(os.Stderr, "samlsp add error: %v\n", err)
 				os.Exit(1)
 			}
@@ -108,6 +108,7 @@ func usage() {
   idpctl samlsp add --issuer <entityId> --acs-url <url> [--audience-uri <uri>] [--name-id-format <format>]
 
 Env:
+  PUBLIC_ISSUER_URL (optional, used for printed integration config)
   DATABASE_URL (required)
   MIGRATIONS_DIR (optional, default ./migrations)
 `)
@@ -153,7 +154,7 @@ func seedUserAdd(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func seedClientAdd(ctx context.Context, store *postgres.Store) error {
+func seedClientAdd(ctx context.Context, store *postgres.Store, cfg config.CLIConfig) error {
 	fs := flag.NewFlagSet("client add", flag.ContinueOnError)
 	var clientID = fs.String("client-id", "", "client_id")
 	var redirectURIs multiFlag
@@ -231,10 +232,11 @@ func seedClientAdd(ctx context.Context, store *postgres.Store) error {
 		fmt.Fprintf(os.Stderr, "\nSave this client_secret now; it will not be shown again.\n")
 		fmt.Printf("client_secret=%s\n", generatedPlain)
 	}
+	printClientIntegrationConfig(cfg, client, generatedPlain)
 	return nil
 }
 
-func seedSamlSPAdd(ctx context.Context, store *postgres.Store) error {
+func seedSamlSPAdd(ctx context.Context, store *postgres.Store, cfg config.CLIConfig) error {
 	fs := flag.NewFlagSet("samlsp add", flag.ContinueOnError)
 	var issuer = fs.String("issuer", "", "SP EntityID")
 	var acsURL = fs.String("acs-url", "", "SP ACS URL (HTTP-POST)")
@@ -268,6 +270,7 @@ func seedSamlSPAdd(ctx context.Context, store *postgres.Store) error {
 	}
 
 	fmt.Printf("saml SP upserted: %s\n", *issuer)
+	printSAMLIntegrationConfig(cfg, sp)
 	return nil
 }
 
@@ -292,4 +295,54 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func printClientIntegrationConfig(cfg config.CLIConfig, c postgres.Client, generatedSecret string) {
+	issuer := normalizedIssuer(cfg.PublicIssuerURL)
+	fmt.Println()
+	fmt.Println("=== OIDC/OAuth2 consumer config ===")
+	fmt.Printf("issuer: %s\n", issuer)
+	fmt.Printf("authorization_endpoint: %s/authorize\n", issuer)
+	fmt.Printf("token_endpoint: %s/token\n", issuer)
+	fmt.Printf("jwks_uri: %s/jwks\n", issuer)
+	fmt.Printf("userinfo_endpoint: %s/userinfo\n", issuer)
+	fmt.Printf("client_id: %s\n", c.ClientID)
+	fmt.Printf("token_endpoint_auth_method: %s\n", c.TokenEndpointAuthMethod)
+	fmt.Printf("redirect_uris: %s\n", c.RedirectURIsJSON)
+	fmt.Printf("allowed_grant_types: %s\n", strings.Join(c.AllowedGrantTypes, ","))
+	fmt.Printf("allowed_scopes: %s\n", strings.Join(c.AllowedScopes, ","))
+	if generatedSecret != "" {
+		fmt.Printf("client_secret: %s\n", generatedSecret)
+	} else if c.ClientSecretHash != nil && strings.TrimSpace(*c.ClientSecretHash) != "" {
+		fmt.Println("client_secret: [provided by --client-secret; not printed]")
+	} else {
+		fmt.Println("client_secret: [public client - none]")
+	}
+}
+
+func printSAMLIntegrationConfig(cfg config.CLIConfig, sp postgres.SamlSP) {
+	issuer := normalizedIssuer(cfg.PublicIssuerURL)
+	fmt.Println()
+	fmt.Println("=== SAML SP consumer config ===")
+	fmt.Printf("idp_entity_id: %s\n", issuer)
+	fmt.Printf("idp_metadata_url: %s/saml/metadata\n", issuer)
+	fmt.Printf("idp_sso_url: %s/saml/sso\n", issuer)
+	fmt.Printf("sp_entity_id: %s\n", sp.Issuer)
+	fmt.Printf("sp_acs_url: %s\n", sp.AcsURL)
+	if sp.AudienceURI != nil && strings.TrimSpace(*sp.AudienceURI) != "" {
+		fmt.Printf("sp_audience_uri: %s\n", *sp.AudienceURI)
+	} else {
+		fmt.Println("sp_audience_uri: [not set]")
+	}
+	if sp.NameIDFormat != nil && strings.TrimSpace(*sp.NameIDFormat) != "" {
+		fmt.Printf("name_id_format: %s\n", *sp.NameIDFormat)
+	}
+}
+
+func normalizedIssuer(issuer string) string {
+	i := strings.TrimSpace(issuer)
+	if i == "" {
+		return "http://localhost:8080"
+	}
+	return strings.TrimRight(i, "/")
 }

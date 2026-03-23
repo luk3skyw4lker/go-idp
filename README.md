@@ -214,6 +214,8 @@ This IdP enforces:
 
 **Confidential client** (default): `idpctl` generates a random `client_secret`, bcrypt-hashes it, stores the hash, and prints the plain secret once (save it).
 
+After `client add`, `idpctl` prints an OIDC/OAuth2 integration config block (issuer/endpoints, client id, auth method, grants/scopes, and secret details).
+
 ```bash
 go run ./cmd/idpctl client add \
   --client-id my-app \
@@ -241,6 +243,8 @@ Repeat `--redirect-uri` multiple times for multiple allowed redirect URIs.
 ### Add a SAML SP registry entry
 
 This IdP supports SP-initiated HTTP-POST SSO.
+
+After `samlsp add`, `idpctl` prints a SAML integration config block (IdP metadata/SSO URLs plus SP entity/ACS/audience values).
 
 ```bash
 go run ./cmd/idpctl samlsp add \
