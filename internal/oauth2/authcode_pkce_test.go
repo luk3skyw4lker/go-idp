@@ -51,6 +51,14 @@ type mockIDTokenIssuer struct {
 	calls int
 	token string
 	err   error
+	accessToken string
+	accessErr   error
+	accessCalls int
+	accessLast  struct {
+		userID   string
+		audience string
+		scope    string
+	}
 	last  struct {
 		userID   string
 		audience string
@@ -67,6 +75,20 @@ func (m *mockIDTokenIssuer) IssueIDToken(ctx context.Context, userID string, aud
 		return "", m.err
 	}
 	return m.token, nil
+}
+
+func (m *mockIDTokenIssuer) IssueAccessToken(ctx context.Context, userID string, audience string, scope string) (string, error) {
+	m.accessCalls++
+	m.accessLast.userID = userID
+	m.accessLast.audience = audience
+	m.accessLast.scope = scope
+	if m.accessErr != nil {
+		return "", m.accessErr
+	}
+	if m.accessToken != "" {
+		return m.accessToken, nil
+	}
+	return "access-token", nil
 }
 
 func newPasswordGrantHandler(t *testing.T, issuer *mockIDTokenIssuer) *Handlers {
