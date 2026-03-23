@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -23,8 +24,9 @@ type Handlers struct {
 	store oauthStore
 	cfg   config.Config
 
-	idTokenIssuer interface {
+	tokenIssuer interface {
 		IssueIDToken(ctx context.Context, userID string, audience string, nonce string) (string, error)
+		IssueAccessToken(ctx context.Context, userID string, audience string, scope string) (string, error)
 	}
 
 	PendingAuthTTL   time.Duration
@@ -39,13 +41,14 @@ type oauthStore interface {
 	GetUserByUsername(ctx context.Context, username string) (postgres.User, error)
 }
 
-func NewHandlers(store oauthStore, cfg config.Config, idTokenIssuer interface {
+func NewHandlers(store oauthStore, cfg config.Config, tokenIssuer interface {
 	IssueIDToken(ctx context.Context, userID string, audience string, nonce string) (string, error)
+	IssueAccessToken(ctx context.Context, userID string, audience string, scope string) (string, error)
 }) *Handlers {
 	return &Handlers{
 		store:            store,
 		cfg:              cfg,
-		idTokenIssuer:    idTokenIssuer,
+		tokenIssuer:      tokenIssuer,
 		PendingAuthTTL:   10 * time.Minute,
 		AuthorizationTTL: 10 * time.Minute,
 	}
@@ -56,7 +59,7 @@ func (h *Handlers) Authorize(c *fiber.Ctx) error {
 
 	responseType := c.Query("response_type")
 	if responseType != "code" {
-		return c.Status(fiber.StatusBadRequest).SendString("unsupported response_type")
+		return h.oauthError(c, fiber.StatusBadRequest, "unsupported_response_type", "unsupported response_type", "authorize_response_type_not_code")
 	}
 
 	clientID := c.Query("client_id")
@@ -68,42 +71,42 @@ func (h *Handlers) Authorize(c *fiber.Ctx) error {
 	nonce := c.Query("nonce")
 
 	if clientID == "" || redirectURI == "" || state == "" || scope == "" || codeChallenge == "" || codeChallengeMethod == "" {
-		return c.Status(fiber.StatusBadRequest).SendString("missing required parameters")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "missing required parameters", "authorize_missing_required_params")
 	}
 	if codeChallengeMethod != "S256" {
-		return c.Status(fiber.StatusBadRequest).SendString("unsupported code_challenge_method")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "unsupported code_challenge_method", "authorize_pkce_method_not_s256")
 	}
 
 	// Validate client.
 	client, err := h.store.GetClientByClientID(ctx, clientID)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_id")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_client", "invalid client_id", "authorize_client_not_found")
 	}
 
 	if !contains(client.AllowedGrantTypes, "authorization_code") {
-		return c.Status(fiber.StatusBadRequest).SendString("grant not allowed")
+		return h.oauthError(c, fiber.StatusBadRequest, "unauthorized_client", "grant not allowed", "authorize_grant_not_allowed")
 	}
 
 	requestScopes := splitScopes(scope)
 	if len(requestScopes) == 0 {
-		return c.Status(fiber.StatusBadRequest).SendString("invalid scope")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_scope", "invalid scope", "authorize_scope_empty")
 	}
 
 	// For OIDC, `nonce` is required when `openid` is requested.
 	if contains(requestScopes, "openid") && nonce == "" {
-		return c.Status(fiber.StatusBadRequest).SendString("missing nonce for openid scope")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "missing nonce for openid scope", "authorize_missing_nonce_for_openid")
 	}
 
 	if !scopesAllAllowed(requestScopes, client.AllowedScopes) {
-		return c.Status(fiber.StatusBadRequest).SendString("scope not allowed")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_scope", "scope not allowed", "authorize_scope_not_allowed")
 	}
 
 	redirectURIs, err := parseRedirectURIs(client.RedirectURIsJSON)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("client redirect_uris invalid")
+		return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "client redirect_uris invalid", "authorize_client_redirect_uris_parse_failed")
 	}
 	if !contains(redirectURIs, redirectURI) {
-		return c.Status(fiber.StatusBadRequest).SendString("redirect_uri not allowed")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "redirect_uri not allowed", "authorize_redirect_uri_not_allowed")
 	}
 
 	// If not authenticated, create pending request and redirect to login.
@@ -123,9 +126,14 @@ func (h *Handlers) Authorize(c *fiber.Ctx) error {
 		}
 
 		if err := h.store.PutPendingAuthRequest(ctx, req); err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to persist pending auth request")
+			return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "failed to persist pending auth request", "authorize_pending_auth_store_failed")
 		}
 
+		slog.Info("authorize_requires_login",
+			"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+			"client_id", clientID,
+			"pending_id", pendingID,
+		)
 		return c.Redirect(fmt.Sprintf("/login?pending_id=%s", url.QueryEscape(pendingID)))
 	}
 
@@ -143,9 +151,16 @@ func (h *Handlers) Authorize(c *fiber.Ctx) error {
 		ExpiresAt:           time.Now().Add(h.AuthorizationTTL),
 	}
 	if err := h.store.CreateAuthorizationCode(ctx, authCode); err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to create authorization code")
+		return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "failed to create authorization code", "authorize_code_create_failed")
 	}
 
+	slog.Info("authorize_code_issued",
+		"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+		"client_id", clientID,
+		"redirect_uri", redirectURI,
+		"scope", authCode.Scope,
+		"nonce_present", nonce != "",
+	)
 	return c.Redirect(redirectWithCode(redirectURI, code, state))
 }
 
@@ -157,7 +172,7 @@ func (h *Handlers) Token(c *fiber.Ctx) error {
 	case "password":
 		return h.tokenPassword(c)
 	default:
-		return c.Status(fiber.StatusBadRequest).SendString("unsupported grant_type")
+		return h.oauthError(c, fiber.StatusBadRequest, "unsupported_grant_type", "unsupported grant_type", "token_unsupported_grant_type")
 	}
 }
 
@@ -169,40 +184,46 @@ func (h *Handlers) tokenAuthorizationCode(c *fiber.Ctx) error {
 	clientID := c.FormValue("client_id")
 	redirectURI := c.FormValue("redirect_uri")
 	if code == "" || codeVerifier == "" {
-		return c.Status(fiber.StatusBadRequest).SendString("missing code or code_verifier")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "missing code or code_verifier", "token_code_or_verifier_missing")
 	}
 
 	authCode, err := h.store.ConsumeAuthorizationCode(ctx, code)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid/expired authorization code")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_grant", "invalid/expired authorization code", "token_auth_code_invalid_or_used_or_expired")
 	}
 
 	// Client + redirect_uri binding.
 	if clientID != "" && authCode.ClientID != clientID {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_id for code")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_grant", "invalid client_id for code", "token_code_client_id_mismatch")
 	}
 	if redirectURI != "" && authCode.RedirectURI != redirectURI {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid redirect_uri for code")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_grant", "invalid redirect_uri for code", "token_code_redirect_uri_mismatch")
 	}
 
 	if authCode.CodeChallengeMethod != "S256" {
-		return c.Status(fiber.StatusBadRequest).SendString("unsupported PKCE method")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "unsupported PKCE method", "token_pkce_method_not_s256")
 	}
 
 	expected := pkceS256(codeVerifier)
 	if expected != authCode.CodeChallenge {
-		return c.Status(fiber.StatusBadRequest).SendString("invalid code_verifier")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_grant", "invalid code_verifier", "token_pkce_verifier_mismatch")
 	}
 
 	client, err := h.store.GetClientByClientID(ctx, authCode.ClientID)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_id")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_client", "invalid client_id", "token_client_not_found_for_code")
 	}
 	if err := h.requireClientSecret(c, client); err != nil {
 		return err
 	}
 
-	accessToken := randomToken(40)
+	if h.tokenIssuer == nil {
+		return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "token issuer not configured", "token_access_issuer_nil")
+	}
+	accessToken, err := h.tokenIssuer.IssueAccessToken(ctx, authCode.UserID, authCode.ClientID, authCode.Scope)
+	if err != nil {
+		return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "failed to issue access_token", "token_access_issue_failed")
+	}
 	expiresIn := int(h.cfg.JWTAccessTTL.Seconds())
 
 	resp := fiber.Map{
@@ -214,18 +235,25 @@ func (h *Handlers) tokenAuthorizationCode(c *fiber.Ctx) error {
 	// OIDC id_token is only included when `openid` is requested.
 	if strings.Contains(authCode.Scope, "openid") {
 		if authCode.Nonce == "" {
-			return c.Status(fiber.StatusBadRequest).SendString("missing nonce in authorization code")
+			return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "missing nonce in authorization code", "token_openid_nonce_missing_on_code")
 		}
-		if h.idTokenIssuer == nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("id_token issuer not configured")
+		if h.tokenIssuer == nil {
+			return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "id_token issuer not configured", "token_id_token_issuer_nil")
 		}
-		idToken, err := h.idTokenIssuer.IssueIDToken(ctx, authCode.UserID, authCode.ClientID, authCode.Nonce)
+		idToken, err := h.tokenIssuer.IssueIDToken(ctx, authCode.UserID, authCode.ClientID, authCode.Nonce)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to issue id_token")
+			return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "failed to issue id_token", "token_id_token_issue_failed")
 		}
 		resp["id_token"] = idToken
 	}
 
+	slog.Info("token_authorization_code_success",
+		"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+		"client_id", authCode.ClientID,
+		"user_id", authCode.UserID,
+		"scope", authCode.Scope,
+		"id_token_present", resp["id_token"] != nil,
+	)
 	return c.JSON(resp)
 }
 
@@ -239,35 +267,41 @@ func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
 	nonce := c.FormValue("nonce")
 
 	if username == "" || password == "" || clientID == "" {
-		return c.Status(fiber.StatusBadRequest).SendString("missing username, password, or client_id")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "missing username, password, or client_id", "token_password_missing_required_params")
 	}
 
 	client, err := h.store.GetClientByClientID(ctx, clientID)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_id")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_client", "invalid client_id", "token_password_client_not_found")
 	}
 	if !contains(client.AllowedGrantTypes, "password") {
-		return c.Status(fiber.StatusBadRequest).SendString("grant not allowed")
+		return h.oauthError(c, fiber.StatusBadRequest, "unauthorized_client", "grant not allowed", "token_password_grant_not_allowed")
 	}
 
 	requestScopes := splitScopes(scope)
 	if !scopesAllAllowed(requestScopes, client.AllowedScopes) {
-		return c.Status(fiber.StatusBadRequest).SendString("scope not allowed")
+		return h.oauthError(c, fiber.StatusBadRequest, "invalid_scope", "scope not allowed", "token_password_scope_not_allowed")
 	}
 
 	user, err := h.store.GetUserByUsername(ctx, username)
 	if err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid credentials")
+		return h.oauthError(c, fiber.StatusUnauthorized, "access_denied", "invalid credentials", "token_password_user_not_found")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid credentials")
+		return h.oauthError(c, fiber.StatusUnauthorized, "access_denied", "invalid credentials", "token_password_mismatch")
 	}
 
 	if err := h.requireClientSecret(c, client); err != nil {
 		return err
 	}
 
-	accessToken := randomToken(40)
+	if h.tokenIssuer == nil {
+		return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "token issuer not configured", "token_password_access_issuer_nil")
+	}
+	accessToken, err := h.tokenIssuer.IssueAccessToken(ctx, user.ID, clientID, strings.Join(requestScopes, " "))
+	if err != nil {
+		return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "failed to issue access_token", "token_password_access_issue_failed")
+	}
 	expiresIn := int(h.cfg.JWTAccessTTL.Seconds())
 
 	resp := fiber.Map{
@@ -278,18 +312,25 @@ func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
 
 	if contains(requestScopes, "openid") {
 		if nonce == "" {
-			return c.Status(fiber.StatusBadRequest).SendString("missing nonce for openid scope")
+			return h.oauthError(c, fiber.StatusBadRequest, "invalid_request", "missing nonce for openid scope", "token_password_missing_nonce_for_openid")
 		}
-		if h.idTokenIssuer == nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("id_token issuer not configured")
+		if h.tokenIssuer == nil {
+			return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "id_token issuer not configured", "token_password_id_token_issuer_nil")
 		}
-		idToken, err := h.idTokenIssuer.IssueIDToken(ctx, user.ID, clientID, nonce)
+		idToken, err := h.tokenIssuer.IssueIDToken(ctx, user.ID, clientID, nonce)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).SendString("failed to issue id_token")
+			return h.oauthError(c, fiber.StatusInternalServerError, "server_error", "failed to issue id_token", "token_password_id_token_issue_failed")
 		}
 		resp["id_token"] = idToken
 	}
 
+	slog.Info("token_password_success",
+		"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+		"client_id", clientID,
+		"user_id", user.ID,
+		"scope", strings.Join(requestScopes, " "),
+		"id_token_present", resp["id_token"] != nil,
+	)
 	return c.JSON(resp)
 }
 
@@ -300,12 +341,39 @@ func (h *Handlers) requireClientSecret(c *fiber.Ctx, client postgres.Client) err
 	}
 	provided := c.FormValue("client_secret")
 	if provided == "" {
-		return c.Status(fiber.StatusUnauthorized).SendString("missing client_secret")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_client", "missing client_secret", "token_client_secret_missing")
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(*client.ClientSecretHash), []byte(provided)); err != nil {
-		return c.Status(fiber.StatusUnauthorized).SendString("invalid client_secret")
+		return h.oauthError(c, fiber.StatusUnauthorized, "invalid_client", "invalid client_secret", "token_client_secret_mismatch")
 	}
 	return nil
+}
+
+func (h *Handlers) oauthError(c *fiber.Ctx, status int, oauthErr, description, cause string) error {
+	reqID := c.GetRespHeader(fiber.HeaderXRequestID)
+	if reqID == "" {
+		reqID = c.Get(fiber.HeaderXRequestID)
+	}
+
+	level := slog.LevelWarn
+	if status >= 500 {
+		level = slog.LevelError
+	}
+	slog.Log(c.Context(), level, "oauth_error_response",
+		"request_id", reqID,
+		"method", c.Method(),
+		"path", c.Path(),
+		"status", status,
+		"oauth_error", oauthErr,
+		"cause", cause,
+	)
+
+	return c.Status(status).JSON(fiber.Map{
+		"error":             oauthErr,
+		"error_description": description,
+		"cause":             cause,
+		"request_id":        reqID,
+	})
 }
 
 func pkceS256(codeVerifier string) string {

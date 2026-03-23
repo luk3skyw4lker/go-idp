@@ -27,6 +27,11 @@ type Config struct {
 
 	// Goose migration directory (relative to the working directory).
 	MigrationsDir string `yaml:"migrations_dir" env:"MIGRATIONS_DIR" env-default:"./migrations"`
+
+	// Logging config (supports config file + env override).
+	LogLevel     string `yaml:"log_level" env:"LOG_LEVEL" env-default:"info"`
+	LogFormat    string `yaml:"log_format" env:"LOG_FORMAT" env-default:"json"` // json | text
+	LogAddSource bool   `yaml:"log_add_source" env:"LOG_ADD_SOURCE" env-default:"false"`
 }
 
 type CLIConfig struct {

@@ -24,6 +24,7 @@ func NewApp(cfg config.Config, store *postgres.Store) *fiber.App {
 	// Middleware required by the plan.
 	app.Use(requestid.New())
 	app.Use(recover.New())
+	app.Use(requestLogger())
 	app.Use(session.Middleware(session.MiddlewareOptions{
 		Store:        store,
 		SessionTTL:   cfg.SessionTTL,

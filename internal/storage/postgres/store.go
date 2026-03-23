@@ -33,6 +33,19 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash, displayN
 	return u, nil
 }
 
+func (s *Store) GetUserByID(ctx context.Context, id string) (User, error) {
+	var u User
+	err := s.pool.QueryRow(
+		ctx,
+		`SELECT id, username, password_hash, display_name, email, created_at
+		 FROM users
+		 WHERE id=$1`,
+		id,
+	).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Email, &u.CreatedAt)
+
+	return u, err
+}
+
 func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, error) {
 	var u User
 	err := s.pool.QueryRow(
@@ -78,8 +91,6 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (Session, erro
 	return sess, nil
 }
 
- 
-
 func (s *Store) UpdateSessionLastSeen(ctx context.Context, sessionID string) error {
 	_, err := s.pool.Exec(ctx, `UPDATE sessions SET last_seen_at=now() WHERE session_id=$1`, sessionID)
 	return err
@@ -89,8 +100,8 @@ type SigningKeyMeta struct {
 	Kid            string
 	PrivatePemPath string
 	PublicPemPath  string
-	Active        bool
-	CreatedAt     time.Time
+	Active         bool
+	CreatedAt      time.Time
 }
 
 func (s *Store) GetActiveSigningKey(ctx context.Context) (SigningKeyMeta, error) {
@@ -183,16 +194,16 @@ func (s *Store) ConsumePendingAuthRequest(ctx context.Context, pendingID string)
 }
 
 type AuthorizationCode struct {
-	Code               string
-	ClientID          string
-	RedirectURI       string
-	CodeChallenge     string
+	Code                string
+	ClientID            string
+	RedirectURI         string
+	CodeChallenge       string
 	CodeChallengeMethod string
-	Scope             string
-	Nonce             string
-	UserID            string
-	ExpiresAt         time.Time
-	UsedAt            *time.Time
+	Scope               string
+	Nonce               string
+	UserID              string
+	ExpiresAt           time.Time
+	UsedAt              *time.Time
 }
 
 func (s *Store) CreateAuthorizationCode(ctx context.Context, code AuthorizationCode) error {
@@ -266,10 +277,10 @@ func (s *Store) UpsertClient(ctx context.Context, c Client) error {
 }
 
 type SamlSP struct {
-	Issuer         string
-	AcsURL         string
-	AudienceURI    *string
-	NameIDFormat   *string
+	Issuer       string
+	AcsURL       string
+	AudienceURI  *string
+	NameIDFormat *string
 }
 
 func (s *Store) GetSamlSPByIssuer(ctx context.Context, issuer string) (SamlSP, error) {
@@ -337,4 +348,3 @@ func (s *Store) ConsumePendingSamlRequest(ctx context.Context, pendingID string)
 	}
 	return req, nil
 }
-

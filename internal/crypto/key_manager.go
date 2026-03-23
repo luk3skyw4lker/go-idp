@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -36,13 +37,26 @@ func NewKeyManager(store *postgres.Store, devKeysDir string) *KeyManager {
 func (km *KeyManager) EnsureActiveKey(ctx context.Context) (*rsa.PrivateKey, *rsa.PublicKey, postgres.SigningKeyMeta, error) {
 	meta, err := km.store.GetActiveSigningKey(ctx)
 	if err == nil {
-		priv, pub, err := km.loadKeyPair(meta)
-		return priv, pub, meta, err
+		priv, pub, loadErr := km.loadKeyPair(meta)
+		if loadErr == nil {
+			return priv, pub, meta, nil
+		}
+
+		// If metadata exists but files are missing/corrupt, recover by creating a new key.
+		slog.Warn("active signing key invalid; generating replacement",
+			"kid", meta.Kid,
+			"private_pem_path", meta.PrivatePemPath,
+			"public_pem_path", meta.PublicPemPath,
+			"error", loadErr.Error(),
+		)
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No active key yet: generate one and activate.
 	} else {
-		return nil, nil, postgres.SigningKeyMeta{}, err
+		// If GetActiveSigningKey itself failed (other than no rows), abort.
+		if err != nil {
+			return nil, nil, postgres.SigningKeyMeta{}, err
+		}
 	}
 
 	priv, pub, kid, privatePath, publicPath, err := km.generateKeyPair()
