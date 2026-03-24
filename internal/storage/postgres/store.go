@@ -277,21 +277,22 @@ func (s *Store) UpsertClient(ctx context.Context, c Client) error {
 }
 
 type SamlSP struct {
-	Issuer       string
-	AcsURL       string
-	AudienceURI  *string
-	NameIDFormat *string
+	Issuer          string
+	AcsURL          string
+	AudienceURI     *string
+	NameIDFormat    *string
+	ResponseBinding string
 }
 
 func (s *Store) GetSamlSPByIssuer(ctx context.Context, issuer string) (SamlSP, error) {
 	var sp SamlSP
 	err := s.pool.QueryRow(
 		ctx,
-		`SELECT issuer, acs_url, audience_uri, name_id_format
+		`SELECT issuer, acs_url, audience_uri, name_id_format, response_binding
 		 FROM saml_sp_registry
 		 WHERE issuer=$1`,
 		issuer,
-	).Scan(&sp.Issuer, &sp.AcsURL, &sp.AudienceURI, &sp.NameIDFormat)
+	).Scan(&sp.Issuer, &sp.AcsURL, &sp.AudienceURI, &sp.NameIDFormat, &sp.ResponseBinding)
 	if err != nil {
 		return SamlSP{}, err
 	}
@@ -299,19 +300,25 @@ func (s *Store) GetSamlSPByIssuer(ctx context.Context, issuer string) (SamlSP, e
 }
 
 func (s *Store) UpsertSamlSP(ctx context.Context, sp SamlSP) error {
+	binding := sp.ResponseBinding
+	if binding == "" {
+		binding = "HTTP-POST"
+	}
 	_, err := s.pool.Exec(
 		ctx,
-		`INSERT INTO saml_sp_registry (issuer, acs_url, audience_uri, name_id_format)
-		 VALUES ($1,$2,$3,$4)
+		`INSERT INTO saml_sp_registry (issuer, acs_url, audience_uri, name_id_format, response_binding)
+		 VALUES ($1,$2,$3,$4,$5)
 		 ON CONFLICT (issuer)
 		 DO UPDATE SET
 		   acs_url=EXCLUDED.acs_url,
 		   audience_uri=EXCLUDED.audience_uri,
-		   name_id_format=EXCLUDED.name_id_format`,
+		   name_id_format=EXCLUDED.name_id_format,
+		   response_binding=EXCLUDED.response_binding`,
 		sp.Issuer,
 		sp.AcsURL,
 		sp.AudienceURI,
 		sp.NameIDFormat,
+		binding,
 	)
 	return err
 }

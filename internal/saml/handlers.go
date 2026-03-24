@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
@@ -33,9 +35,16 @@ type Handlers struct {
 	signingCertDER []byte
 }
 
+const (
+	responseBindingHTTPPost     = "HTTP-POST"
+	responseBindingHTTPRedirect = "HTTP-Redirect"
+)
+
 func NewHandlers(cfg config.Config, store *postgres.Store) *Handlers {
 	ks := dsig.RandomKeyStoreForTest()
 	ctx := dsig.NewDefaultSigningContext(ks)
+	// Prefer exclusive c14n for wider SAML interoperability.
+	ctx.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")
 
 	// Best-effort extraction of the generated certificate for metadata.
 	// Most implementations return (*rsa.PrivateKey, []byte, error).
@@ -45,9 +54,9 @@ func NewHandlers(cfg config.Config, store *postgres.Store) *Handlers {
 	}
 
 	return &Handlers{
-		cfg:         cfg,
-		store:       store,
-		signingCtx:  ctx,
+		cfg:            cfg,
+		store:          store,
+		signingCtx:     ctx,
 		signingCertDER: certDER,
 	}
 }
@@ -85,6 +94,9 @@ func (h *Handlers) SSO(c *fiber.Ctx) error {
 	case fiber.MethodGet:
 		pendingID := c.Query("pending_saml_id")
 		if pendingID == "" {
+			slog.Warn("saml_resume_missing_pending_id",
+				"request_id", requestIDFromCtx(c),
+			)
 			return c.Status(fiber.StatusBadRequest).SendString("missing pending_saml_id")
 		}
 		return h.resume(c, pendingID)
@@ -99,28 +111,49 @@ func (h *Handlers) handlePost(c *fiber.Ctx) error {
 	ctx := c.Context()
 	samlRequestB64 := c.FormValue("SAMLRequest")
 	relayState := c.FormValue("RelayState")
+	reqID := requestIDFromCtx(c)
 
 	if samlRequestB64 == "" {
+		slog.Warn("saml_post_missing_saml_request",
+			"request_id", reqID,
+		)
 		return c.Status(fiber.StatusBadRequest).SendString("missing SAMLRequest")
 	}
+	slog.Info("saml_post_received",
+		"request_id", reqID,
+		"relay_state_present", relayState != "",
+	)
 
 	xmlBytes, err := decodeSAMLRequest(samlRequestB64)
 	if err != nil {
+		slog.Warn("saml_post_invalid_saml_request",
+			"request_id", reqID,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusBadRequest).SendString("invalid SAMLRequest")
 	}
 
 	authnReq, err := parseAuthnRequest(xmlBytes)
 	if err != nil {
+		slog.Warn("saml_post_invalid_authn_request",
+			"request_id", reqID,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusBadRequest).SendString("invalid AuthnRequest")
 	}
-
-	userID, ok := session.UserIDFromContext(c)
 
 	pendingID := randomToken(24)
 	var relayStatePtr *string
 	if relayState != "" {
 		relayStatePtr = &relayState
 	}
+
+	slog.Debug("saml_post_parsed_authn_request",
+		"request_id", reqID,
+		"authn_request_issuer", authnReq.Issuer,
+		"authn_request_id", authnReq.ID,
+		"xml_bytes", string(xmlBytes),
+	)
 
 	req := postgres.PendingSamlRequest{
 		PendingID:      pendingID,
@@ -130,44 +163,89 @@ func (h *Handlers) handlePost(c *fiber.Ctx) error {
 		ExpiresAt:      time.Now().Add(10 * time.Minute),
 	}
 
-	// Persist pending state so login can resume.
-	if err := h.store.PutPendingSamlRequest(ctx, req); err != nil {
-		return c.Status(fiber.StatusInternalServerError).SendString("failed to persist pending SAML request")
-	}
-
+	userID, ok := session.UserIDFromContext(c)
 	// If already logged in, resume immediately.
 	if ok && userID != "" {
+		slog.Info("saml_post_authenticated_user",
+			"request_id", reqID,
+			"sp_issuer", req.SPIssuer,
+		)
 		return h.buildAndReturnResponse(c, req, userID)
 	}
+
+	// Persist pending state so login can resume.
+	if err := h.store.PutPendingSamlRequest(ctx, req); err != nil {
+		slog.Error("saml_pending_store_failed",
+			"request_id", reqID,
+			"sp_issuer", req.SPIssuer,
+			"error", err.Error(),
+		)
+		return c.Status(fiber.StatusInternalServerError).SendString("failed to persist pending SAML request")
+	}
+	slog.Info("saml_pending_created",
+		"request_id", reqID,
+		"pending_saml_id", pendingID,
+		"sp_issuer", req.SPIssuer,
+	)
 
 	return c.Redirect(fmt.Sprintf("/login?pending_saml_id=%s", urlQueryEscape(pendingID)))
 }
 
 func (h *Handlers) resume(c *fiber.Ctx, pendingID string) error {
 	ctx := c.Context()
+	reqID := requestIDFromCtx(c)
 	userID, ok := session.UserIDFromContext(c)
 	if !ok || userID == "" {
+		slog.Warn("saml_resume_unauthenticated",
+			"request_id", reqID,
+			"pending_saml_id", pendingID,
+		)
 		return c.Status(fiber.StatusUnauthorized).SendString("not authenticated")
 	}
 
 	req, err := h.store.ConsumePendingSamlRequest(ctx, pendingID)
 	if err != nil {
+		slog.Warn("saml_resume_pending_not_found_or_expired",
+			"request_id", reqID,
+			"pending_saml_id", pendingID,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusBadRequest).SendString("invalid/expired pending SAML request")
 	}
+	slog.Info("saml_resume_pending_consumed",
+		"request_id", reqID,
+		"pending_saml_id", pendingID,
+		"sp_issuer", req.SPIssuer,
+	)
 
 	return h.buildAndReturnResponse(c, req, userID)
 }
 
 func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.PendingSamlRequest, userID string) error {
 	_ = context.Background()
+	reqID := requestIDFromCtx(c)
+	slog.Info("saml_response_build_started",
+		"request_id", reqID,
+		"sp_issuer", pending.SPIssuer,
+	)
 
 	authnReq, err := parseAuthnRequest([]byte(pending.SAMLRequestXML))
 	if err != nil {
+		slog.Error("saml_response_parse_authn_request_failed",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse AuthnRequest")
 	}
 
 	sp, err := h.store.GetSamlSPByIssuer(c.Context(), pending.SPIssuer)
 	if err != nil {
+		slog.Warn("saml_response_unknown_sp",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusBadRequest).SendString("unknown Service Provider")
 	}
 
@@ -205,6 +283,9 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 
 	// Assertion
 	assertion := etree.NewElement("saml:Assertion")
+	// With exclusive c14n, assertion signatures should not depend on ancestor namespace context.
+	assertion.CreateAttr("xmlns:saml", "urn:oasis:names:tc:SAML:2.0:assertion")
+	assertion.CreateAttr("xmlns:ds", "http://www.w3.org/2000/09/xmldsig#")
 	assertion.CreateAttr("ID", assertionID)
 	assertion.CreateAttr("IssueInstant", now.Format(time.RFC3339))
 	assertion.CreateAttr("Version", "2.0")
@@ -258,6 +339,11 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 	// Sign the assertion.
 	signedAssertion, err := h.signingCtx.SignEnveloped(assertion)
 	if err != nil {
+		slog.Error("saml_response_sign_assertion_failed",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to sign SAML assertion")
 	}
 
@@ -267,6 +353,11 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 	doc.SetRoot(response)
 	xmlOut, err := doc.WriteToString()
 	if err != nil {
+		slog.Error("saml_response_serialize_failed",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"error", err.Error(),
+		)
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to serialize SAML response")
 	}
 
@@ -276,7 +367,30 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 		relayState = *pending.RelayState
 	}
 
-	html := fmt.Sprintf(`<!doctype html>
+	binding := normalizedResponseBinding(sp.ResponseBinding)
+	switch binding {
+	case responseBindingHTTPRedirect:
+		redirectURL, err := redirectWithSAMLResponse(acsURL, samlRespB64, relayState)
+		if err != nil {
+			slog.Error("saml_response_redirect_build_failed",
+				"request_id", reqID,
+				"sp_issuer", pending.SPIssuer,
+				"acs_url", acsURL,
+				"error", err.Error(),
+			)
+			return c.Status(fiber.StatusInternalServerError).SendString("failed to build redirect response")
+		}
+		slog.Info("saml_response_ready",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"acs_url", acsURL,
+			"binding", responseBindingHTTPRedirect,
+			"relay_state_present", relayState != "",
+			"user_id", userID,
+		)
+		return c.Redirect(redirectURL)
+	default:
+		html := fmt.Sprintf(`<!doctype html>
 <html><body>
 <form method="post" action="%s">
   <input type="hidden" name="SAMLResponse" value="%s"/>
@@ -285,7 +399,16 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 <script>document.forms[0].submit();</script>
 </body></html>`, htmlEscape(acsURL), htmlEscape(samlRespB64), htmlEscape(relayState))
 
-	return c.Type("text/html; charset=utf-8").SendString(html)
+		slog.Info("saml_response_ready",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"acs_url", acsURL,
+			"binding", responseBindingHTTPPost,
+			"relay_state_present", relayState != "",
+			"user_id", userID,
+		)
+		return c.Type("text/html; charset=utf-8").SendString(html)
+	}
 }
 
 // --- SAML helpers ---
@@ -326,10 +449,20 @@ func parseAuthnRequest(xmlBytes []byte) (AuthnRequest, error) {
 }
 
 func decodeSAMLRequest(b64 string) ([]byte, error) {
+	slog.Debug("saml_decode_request_input",
+		"saml_request_b64", b64,
+	)
 	raw, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
+		slog.Warn("saml_decode_base64_failed",
+			"error", err.Error(),
+		)
 		return nil, err
 	}
+
+	slog.Debug("saml_decode_request_plain_xml",
+		"saml_request_decoded", string(raw),
+	)
 
 	trim := bytes.TrimSpace(raw)
 	if bytes.HasPrefix(trim, []byte("<")) {
@@ -339,13 +472,22 @@ func decodeSAMLRequest(b64 string) ([]byte, error) {
 	// Try DEFLATE/Zlib (some test SPs still send deflated payloads).
 	r, err := zlib.NewReader(bytes.NewReader(raw))
 	if err != nil {
+		slog.Warn("saml_decode_inflate_reader_failed",
+			"error", err.Error(),
+		)
 		return nil, err
 	}
 	defer r.Close()
 	decoded, err := io.ReadAll(r)
 	if err != nil {
+		slog.Warn("saml_decode_inflate_read_failed",
+			"error", err.Error(),
+		)
 		return nil, err
 	}
+	slog.Debug("saml_decode_request_inflated",
+		"saml_request_decoded", string(decoded),
+	)
 	return decoded, nil
 }
 
@@ -382,3 +524,31 @@ func htmlEscape(s string) string {
 	return s
 }
 
+func redirectWithSAMLResponse(acsURL, samlResponseB64, relayState string) (string, error) {
+	u, err := url.Parse(acsURL)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("SAMLResponse", samlResponseB64)
+	if relayState != "" {
+		q.Set("RelayState", relayState)
+	}
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+func normalizedResponseBinding(binding string) string {
+	b := strings.TrimSpace(binding)
+	if b == responseBindingHTTPRedirect {
+		return responseBindingHTTPRedirect
+	}
+	return responseBindingHTTPPost
+}
+
+func requestIDFromCtx(c *fiber.Ctx) string {
+	if id := c.GetRespHeader(fiber.HeaderXRequestID); id != "" {
+		return id
+	}
+	return c.Get(fiber.HeaderXRequestID)
+}

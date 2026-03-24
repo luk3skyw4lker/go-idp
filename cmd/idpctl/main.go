@@ -105,7 +105,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `Usage:
   idpctl user add --username <u> --password <p> [--display-name <d>] [--email <e>]
   idpctl client add --client-id <id> --redirect-uri <url> [--redirect-uri <url>...] [--grant-types <csv>] [--scopes <csv>] [--public] [--client-secret <s>] [--token-endpoint-auth-method <m>]
-  idpctl samlsp add --issuer <entityId> --acs-url <url> [--audience-uri <uri>] [--name-id-format <format>]
+  idpctl samlsp add --issuer <entityId> --acs-url <url> [--audience-uri <uri>] [--name-id-format <format>] [--response-binding <HTTP-POST|HTTP-Redirect>]
 
 Env:
   PUBLIC_ISSUER_URL (optional, used for printed integration config)
@@ -242,6 +242,7 @@ func seedSamlSPAdd(ctx context.Context, store *postgres.Store, cfg config.CLICon
 	var acsURL = fs.String("acs-url", "", "SP ACS URL (HTTP-POST)")
 	var audienceURI = fs.String("audience-uri", "", "audience restriction URI (optional)")
 	var nameIDFormat = fs.String("name-id-format", "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified", "NameID format")
+	var responseBinding = fs.String("response-binding", "HTTP-POST", "Response binding: HTTP-POST or HTTP-Redirect")
 	_ = fs.Parse(os.Args[3:])
 
 	if *issuer == "" || *acsURL == "" {
@@ -257,12 +258,17 @@ func seedSamlSPAdd(ctx context.Context, store *postgres.Store, cfg config.CLICon
 	if strings.TrimSpace(*nameIDFormat) != "" {
 		nameIDPtr = nameIDFormat
 	}
+	binding := strings.TrimSpace(*responseBinding)
+	if binding != "HTTP-POST" && binding != "HTTP-Redirect" {
+		return fmt.Errorf("invalid response-binding %q: must be HTTP-POST or HTTP-Redirect", binding)
+	}
 
 	sp := postgres.SamlSP{
-		Issuer:       *issuer,
-		AcsURL:       *acsURL,
-		AudienceURI:  audPtr,
-		NameIDFormat: nameIDPtr,
+		Issuer:          *issuer,
+		AcsURL:          *acsURL,
+		AudienceURI:     audPtr,
+		NameIDFormat:    nameIDPtr,
+		ResponseBinding: binding,
 	}
 
 	if err := store.UpsertSamlSP(ctx, sp); err != nil {
@@ -329,6 +335,7 @@ func printSAMLIntegrationConfig(cfg config.CLIConfig, sp postgres.SamlSP) {
 	fmt.Printf("idp_sso_url: %s/saml/sso\n", issuer)
 	fmt.Printf("sp_entity_id: %s\n", sp.Issuer)
 	fmt.Printf("sp_acs_url: %s\n", sp.AcsURL)
+	fmt.Printf("sp_response_binding: %s\n", sp.ResponseBinding)
 	if sp.AudienceURI != nil && strings.TrimSpace(*sp.AudienceURI) != "" {
 		fmt.Printf("sp_audience_uri: %s\n", *sp.AudienceURI)
 	} else {

@@ -8,9 +8,9 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: postgres
     ports:
-      - "5432:5432"
+      - '5432:5432'
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d postgres']
       interval: 5s
       timeout: 3s
       retries: 20
@@ -37,7 +37,7 @@ services:
         idpctl user add --username alice --password password123 --display-name "Alice Example" --email alice@example.com
         idpctl client add --public --client-id demo-client --redirect-uri "http://localhost:8081/callback" --grant-types "authorization_code,password" --scopes "openid"
         idpctl samlsp add --issuer "http://sp.example/metadata" --acs-url "http://sp.example/acs" --audience-uri "http://sp.example/audience" --name-id-format "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
-    restart: "no"
+    restart: 'no'
 
   idp:
     build:
@@ -55,12 +55,15 @@ services:
       LISTEN_ADDR: :8080
       MIGRATIONS_DIR: /app/migrations
       DEV_KEYS_DIR: /app/dev-keys
-      COOKIE_SECURE: "false"
+      COOKIE_SECURE: 'false'
       SESSION_TTL: 24h
       JWT_ACCESS_TTL: 15m
       JWT_ID_TTL: 15m
+      LOG_LEVEL: debug
+      LOG_FORMAT: json
+      LOG_ADD_SOURCE: false
     ports:
-      - "8080:8080"
+      - '8080:8080'
     volumes:
       - devkeys:/app/dev-keys
     restart: unless-stopped
@@ -68,4 +71,3 @@ services:
 volumes:
   pgdata:
   devkeys:
-
