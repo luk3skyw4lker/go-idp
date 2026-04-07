@@ -1,9 +1,9 @@
 package http
 
 import (
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/gofiber/fiber/v2/middleware/requestid"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/recover"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/luk3skyw4lker/go-idp/internal/auth"
 	"github.com/luk3skyw4lker/go-idp/internal/config"
 	crypto2 "github.com/luk3skyw4lker/go-idp/internal/crypto"
@@ -17,9 +17,7 @@ import (
 // NewApp creates the Fiber server and wires placeholder routes.
 // Protocol logic is implemented in later steps.
 func NewApp(cfg config.Config, store *postgres.Store) *fiber.App {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New()
 
 	// Middleware required by the plan.
 	app.Use(requestid.New())
@@ -32,7 +30,7 @@ func NewApp(cfg config.Config, store *postgres.Store) *fiber.App {
 	}))
 
 	// Health
-	app.Get("/healthz", func(c *fiber.Ctx) error {
+	app.Get("/healthz", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).SendString("ok")
 	})
 

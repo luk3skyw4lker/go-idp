@@ -13,7 +13,7 @@ This is a local/test Identity Provider (IdP) written in Go. It provides:
   - SP-initiated SSO endpoint (`/saml/sso`) that returns an auto-submitting HTML form containing `SAMLResponse`
 - **Persistent sessions** backed by **Postgres**, stored in an `HttpOnly` cookie.
 
-HTTP server: **Fiber** (`github.com/gofiber/fiber/v2`).
+HTTP server: **Fiber** (`github.com/gofiber/fiber/v3`).
 
 ## Endpoints
 

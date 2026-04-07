@@ -15,7 +15,8 @@ import (
 	"time"
 
 	"github.com/beevik/etree"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/luk3skyw4lker/go-idp/internal/config"
 	"github.com/luk3skyw4lker/go-idp/internal/session"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
@@ -61,7 +62,7 @@ func NewHandlers(cfg config.Config, store *postgres.Store) *Handlers {
 	}
 }
 
-func (h *Handlers) Metadata(c *fiber.Ctx) error {
+func (h *Handlers) Metadata(c fiber.Ctx) error {
 	entityID := h.cfg.PublicIssuerURL
 	location := h.cfg.PublicIssuerURL + "/saml/sso"
 
@@ -89,7 +90,7 @@ func (h *Handlers) Metadata(c *fiber.Ctx) error {
 	return c.SendString(metadata)
 }
 
-func (h *Handlers) SSO(c *fiber.Ctx) error {
+func (h *Handlers) SSO(c fiber.Ctx) error {
 	switch c.Method() {
 	case fiber.MethodGet:
 		pendingID := c.Query("pending_saml_id")
@@ -107,8 +108,8 @@ func (h *Handlers) SSO(c *fiber.Ctx) error {
 	}
 }
 
-func (h *Handlers) handlePost(c *fiber.Ctx) error {
-	ctx := c.Context()
+func (h *Handlers) handlePost(c fiber.Ctx) error {
+	ctx := c
 	samlRequestB64 := c.FormValue("SAMLRequest")
 	relayState := c.FormValue("RelayState")
 	reqID := requestIDFromCtx(c)
@@ -188,11 +189,11 @@ func (h *Handlers) handlePost(c *fiber.Ctx) error {
 		"sp_issuer", req.SPIssuer,
 	)
 
-	return c.Redirect(fmt.Sprintf("/login?pending_saml_id=%s", urlQueryEscape(pendingID)))
+	return c.Redirect().To(fmt.Sprintf("/login?pending_saml_id=%s", urlQueryEscape(pendingID)))
 }
 
-func (h *Handlers) resume(c *fiber.Ctx, pendingID string) error {
-	ctx := c.Context()
+func (h *Handlers) resume(c fiber.Ctx, pendingID string) error {
+	ctx := c
 	reqID := requestIDFromCtx(c)
 	userID, ok := session.UserIDFromContext(c)
 	if !ok || userID == "" {
@@ -221,7 +222,7 @@ func (h *Handlers) resume(c *fiber.Ctx, pendingID string) error {
 	return h.buildAndReturnResponse(c, req, userID)
 }
 
-func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.PendingSamlRequest, userID string) error {
+func (h *Handlers) buildAndReturnResponse(c fiber.Ctx, pending postgres.PendingSamlRequest, userID string) error {
 	_ = context.Background()
 	reqID := requestIDFromCtx(c)
 	slog.Info("saml_response_build_started",
@@ -239,7 +240,7 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 		return c.Status(fiber.StatusInternalServerError).SendString("failed to parse AuthnRequest")
 	}
 
-	sp, err := h.store.GetSamlSPByIssuer(c.Context(), pending.SPIssuer)
+	sp, err := h.store.GetSamlSPByIssuer(c, pending.SPIssuer)
 	if err != nil {
 		slog.Warn("saml_response_unknown_sp",
 			"request_id", reqID,
@@ -388,7 +389,7 @@ func (h *Handlers) buildAndReturnResponse(c *fiber.Ctx, pending postgres.Pending
 			"relay_state_present", relayState != "",
 			"user_id", userID,
 		)
-		return c.Redirect(redirectURL)
+		return c.Redirect().To(redirectURL)
 	default:
 		html := fmt.Sprintf(`<!doctype html>
 <html><body>
@@ -546,8 +547,8 @@ func normalizedResponseBinding(binding string) string {
 	return responseBindingHTTPPost
 }
 
-func requestIDFromCtx(c *fiber.Ctx) string {
-	if id := c.GetRespHeader(fiber.HeaderXRequestID); id != "" {
+func requestIDFromCtx(c fiber.Ctx) string {
+	if id := requestid.FromContext(c); id != "" {
 		return id
 	}
 	return c.Get(fiber.HeaderXRequestID)

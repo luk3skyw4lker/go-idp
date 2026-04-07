@@ -6,21 +6,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 )
 
 // requestLogger logs request input and final response in structured JSON format.
 // Sensitive values are redacted.
 func requestLogger() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		start := time.Now()
 
-		reqID := c.GetRespHeader(fiber.HeaderXRequestID)
+		reqID := requestid.FromContext(c)
 		if reqID == "" {
 			reqID = c.Get(fiber.HeaderXRequestID)
 		}
 
-		query := redactValues(parseQuery(c.Context().QueryArgs().String()))
+		query := redactValues(parseQuery(string(c.Request().URI().QueryString())))
 		body := redactFormBody(c)
 
 		slog.Info("http_request",
@@ -47,7 +48,7 @@ func requestLogger() fiber.Handler {
 			level = slog.LevelWarn
 		}
 
-		slog.Log(c.Context(), level, "http_response",
+		slog.Log(c, level, "http_response",
 			"request_id", reqID,
 			"method", c.Method(),
 			"path", c.Path(),
@@ -72,7 +73,7 @@ func parseQuery(raw string) url.Values {
 	return v
 }
 
-func redactFormBody(c *fiber.Ctx) url.Values {
+func redactFormBody(c fiber.Ctx) url.Values {
 	ct := strings.ToLower(c.Get(fiber.HeaderContentType))
 	if !strings.Contains(ct, fiber.MIMEApplicationForm) {
 		return url.Values{}
@@ -104,4 +105,3 @@ func shouldRedactKey(key string) bool {
 		return false
 	}
 }
-

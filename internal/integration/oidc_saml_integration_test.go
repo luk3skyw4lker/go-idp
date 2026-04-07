@@ -15,27 +15,27 @@ import (
 	"testing"
 	"time"
 
-	idphttp "github.com/luk3skyw4lker/go-idp/internal/http"
 	"github.com/luk3skyw4lker/go-idp/internal/config"
+	idphttp "github.com/luk3skyw4lker/go-idp/internal/http"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type testSetup struct {
-	cfg        config.Config
-	pool       *pgxpool.Pool
-	store      *postgres.Store
-	app        *fiber.App
-	username   string
-	password   string
-	userID     string
-	clientID   string
+	cfg         config.Config
+	pool        *pgxpool.Pool
+	store       *postgres.Store
+	app         *fiber.App
+	username    string
+	password    string
+	userID      string
+	clientID    string
 	redirectURI string
-	spIssuer   string
-	spAcsURL   string
+	spIssuer    string
+	spAcsURL    string
 }
 
 func setup(t *testing.T) testSetup {
@@ -101,7 +101,7 @@ func setup(t *testing.T) testSetup {
 	redirectURI := "http://localhost/callback"
 	redirectJSON := mustJSON(t, []string{redirectURI})
 	client := postgres.Client{
-		ClientID:                 clientID,
+		ClientID:                clientID,
 		ClientSecretHash:        nil,
 		RedirectURIsJSON:        redirectJSON,
 		TokenEndpointAuthMethod: "none",
@@ -116,7 +116,7 @@ func setup(t *testing.T) testSetup {
 	spAcsURL := "http://sp.example/acs"
 	nameIDFormat := "urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"
 	sp := postgres.SamlSP{
-		Issuer:        spIssuer,
+		Issuer:       spIssuer,
 		AcsURL:       spAcsURL,
 		AudienceURI:  nil,
 		NameIDFormat: &nameIDFormat,
@@ -142,7 +142,7 @@ func setup(t *testing.T) testSetup {
 
 func doRequest(t *testing.T, app *fiber.App, req *http.Request) *http.Response {
 	t.Helper()
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestOIDC_AuthorizationCode_PKCE(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/authorize?"+q.Encode(), nil)
 	resp := doRequest(t, s.app, req)
-	if resp.StatusCode != http.StatusFound {
+	if !isRedirect(resp.StatusCode) {
 		t.Fatalf("expected redirect, got %d", resp.StatusCode)
 	}
 	loc := resp.Header.Get("Location")
@@ -215,7 +215,7 @@ func TestOIDC_AuthorizationCode_PKCE(t *testing.T) {
 	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	loginResp := doRequest(t, s.app, loginReq)
-	if loginResp.StatusCode != http.StatusFound {
+	if !isRedirect(loginResp.StatusCode) {
 		t.Fatalf("expected redirect from login, got %d", loginResp.StatusCode)
 	}
 	sessionCookie, ok := firstSetCookie(loginResp, "idp_session")
@@ -407,7 +407,7 @@ func TestSAML_SPInitiated_POST(t *testing.T) {
 	postReq := httptest.NewRequest(http.MethodPost, "/saml/sso", strings.NewReader(form.Encode()))
 	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	postResp := doRequest(t, s.app, postReq)
-	if postResp.StatusCode != http.StatusFound {
+	if !isRedirect(postResp.StatusCode) {
 		t.Fatalf("expected redirect, got %d", postResp.StatusCode)
 	}
 	loc := postResp.Header.Get("Location")
@@ -433,7 +433,7 @@ func TestSAML_SPInitiated_POST(t *testing.T) {
 	loginReq := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(loginForm.Encode()))
 	loginReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	loginResp := doRequest(t, s.app, loginReq)
-	if loginResp.StatusCode != http.StatusFound {
+	if !isRedirect(loginResp.StatusCode) {
 		t.Fatalf("expected redirect from login, got %d", loginResp.StatusCode)
 	}
 
@@ -512,3 +512,6 @@ func randToken(n int) string {
 	return strings.TrimRight(base64.RawURLEncoding.EncodeToString(b), "=")
 }
 
+func isRedirect(status int) bool {
+	return status == http.StatusFound || status == http.StatusSeeOther
+}

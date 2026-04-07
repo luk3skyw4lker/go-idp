@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/luk3skyw4lker/go-idp/internal/config"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
 	"golang.org/x/crypto/bcrypt"
@@ -48,9 +48,9 @@ func (m *mockStore) GetUserByUsername(ctx context.Context, username string) (pos
 }
 
 type mockIDTokenIssuer struct {
-	calls int
-	token string
-	err   error
+	calls       int
+	token       string
+	err         error
 	accessToken string
 	accessErr   error
 	accessCalls int
@@ -59,7 +59,7 @@ type mockIDTokenIssuer struct {
 		audience string
 		scope    string
 	}
-	last  struct {
+	last struct {
 		userID   string
 		audience string
 		nonce    string

@@ -3,7 +3,7 @@ package session
 import (
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
 )
 
@@ -18,7 +18,7 @@ type MiddlewareOptions struct {
 // Middleware attaches "user_id" to the Fiber context if a valid session cookie is present.
 // Unauthenticated requests continue without error (endpoints decide whether auth is required).
 func Middleware(opts MiddlewareOptions) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if opts.Store == nil {
 			return fiber.ErrInternalServerError
 		}
@@ -41,7 +41,7 @@ func Middleware(opts MiddlewareOptions) fiber.Handler {
 	}
 }
 
-func SetSessionCookie(c *fiber.Ctx, sessionID string, ttl time.Duration, cookieSecure bool) {
+func SetSessionCookie(c fiber.Ctx, sessionID string, ttl time.Duration, cookieSecure bool) {
 	c.Cookie(&fiber.Cookie{
 		Name:     SessionCookieName,
 		Value:    sessionID,
@@ -53,7 +53,7 @@ func SetSessionCookie(c *fiber.Ctx, sessionID string, ttl time.Duration, cookieS
 	})
 }
 
-func ClearSessionCookie(c *fiber.Ctx) {
+func ClearSessionCookie(c fiber.Ctx) {
 	c.Cookie(&fiber.Cookie{
 		Name:     SessionCookieName,
 		Value:    "",
@@ -65,7 +65,7 @@ func ClearSessionCookie(c *fiber.Ctx) {
 	})
 }
 
-func UserIDFromContext(c *fiber.Ctx) (string, bool) {
+func UserIDFromContext(c fiber.Ctx) (string, bool) {
 	v := c.Locals("user_id")
 	if v == nil {
 		return "", false

@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/luk3skyw4lker/go-idp/internal/config"
 	"github.com/luk3skyw4lker/go-idp/internal/session"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
@@ -54,8 +55,8 @@ func NewHandlers(store oauthStore, cfg config.Config, tokenIssuer interface {
 	}
 }
 
-func (h *Handlers) Authorize(c *fiber.Ctx) error {
-	ctx := c.Context()
+func (h *Handlers) Authorize(c fiber.Ctx) error {
+	ctx := c
 
 	responseType := c.Query("response_type")
 	if responseType != "code" {
@@ -130,11 +131,11 @@ func (h *Handlers) Authorize(c *fiber.Ctx) error {
 		}
 
 		slog.Info("authorize_requires_login",
-			"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+			"request_id", requestid.FromContext(c),
 			"client_id", clientID,
 			"pending_id", pendingID,
 		)
-		return c.Redirect(fmt.Sprintf("/login?pending_id=%s", url.QueryEscape(pendingID)))
+		return c.Redirect().To(fmt.Sprintf("/login?pending_id=%s", url.QueryEscape(pendingID)))
 	}
 
 	// Authenticated: mint authorization code immediately.
@@ -155,16 +156,16 @@ func (h *Handlers) Authorize(c *fiber.Ctx) error {
 	}
 
 	slog.Info("authorize_code_issued",
-		"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+		"request_id", requestid.FromContext(c),
 		"client_id", clientID,
 		"redirect_uri", redirectURI,
 		"scope", authCode.Scope,
 		"nonce_present", nonce != "",
 	)
-	return c.Redirect(redirectWithCode(redirectURI, code, state))
+	return c.Redirect().To(redirectWithCode(redirectURI, code, state))
 }
 
-func (h *Handlers) Token(c *fiber.Ctx) error {
+func (h *Handlers) Token(c fiber.Ctx) error {
 	grantType := c.FormValue("grant_type")
 	switch grantType {
 	case "authorization_code":
@@ -176,8 +177,8 @@ func (h *Handlers) Token(c *fiber.Ctx) error {
 	}
 }
 
-func (h *Handlers) tokenAuthorizationCode(c *fiber.Ctx) error {
-	ctx := c.Context()
+func (h *Handlers) tokenAuthorizationCode(c fiber.Ctx) error {
+	ctx := c
 
 	code := c.FormValue("code")
 	codeVerifier := c.FormValue("code_verifier")
@@ -248,7 +249,7 @@ func (h *Handlers) tokenAuthorizationCode(c *fiber.Ctx) error {
 	}
 
 	slog.Info("token_authorization_code_success",
-		"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+		"request_id", requestid.FromContext(c),
 		"client_id", authCode.ClientID,
 		"user_id", authCode.UserID,
 		"scope", authCode.Scope,
@@ -257,8 +258,8 @@ func (h *Handlers) tokenAuthorizationCode(c *fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
-	ctx := c.Context()
+func (h *Handlers) tokenPassword(c fiber.Ctx) error {
+	ctx := c
 
 	username := c.FormValue("username")
 	password := c.FormValue("password")
@@ -325,7 +326,7 @@ func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
 	}
 
 	slog.Info("token_password_success",
-		"request_id", c.GetRespHeader(fiber.HeaderXRequestID),
+		"request_id", requestid.FromContext(c),
 		"client_id", clientID,
 		"user_id", user.ID,
 		"scope", strings.Join(requestScopes, " "),
@@ -335,7 +336,7 @@ func (h *Handlers) tokenPassword(c *fiber.Ctx) error {
 }
 
 // requireClientSecret enforces client_secret for confidential clients (client_secret_hash set).
-func (h *Handlers) requireClientSecret(c *fiber.Ctx, client postgres.Client) error {
+func (h *Handlers) requireClientSecret(c fiber.Ctx, client postgres.Client) error {
 	if client.ClientSecretHash == nil || strings.TrimSpace(*client.ClientSecretHash) == "" {
 		return nil
 	}
@@ -349,8 +350,8 @@ func (h *Handlers) requireClientSecret(c *fiber.Ctx, client postgres.Client) err
 	return nil
 }
 
-func (h *Handlers) oauthError(c *fiber.Ctx, status int, oauthErr, description, cause string) error {
-	reqID := c.GetRespHeader(fiber.HeaderXRequestID)
+func (h *Handlers) oauthError(c fiber.Ctx, status int, oauthErr, description, cause string) error {
+	reqID := requestid.FromContext(c)
 	if reqID == "" {
 		reqID = c.Get(fiber.HeaderXRequestID)
 	}
@@ -359,7 +360,7 @@ func (h *Handlers) oauthError(c *fiber.Ctx, status int, oauthErr, description, c
 	if status >= 500 {
 		level = slog.LevelError
 	}
-	slog.Log(c.Context(), level, "oauth_error_response",
+	slog.Log(c, level, "oauth_error_response",
 		"request_id", reqID,
 		"method", c.Method(),
 		"path", c.Path(),

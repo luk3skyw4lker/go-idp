@@ -14,7 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/requestid"
 	"github.com/luk3skyw4lker/go-idp/internal/config"
 	crypto2 "github.com/luk3skyw4lker/go-idp/internal/crypto"
 	"github.com/luk3skyw4lker/go-idp/internal/session"
@@ -38,7 +39,7 @@ func NewHandlers(cfg config.Config, store *postgres.Store, keyMgr *crypto2.KeyMa
 	}
 }
 
-func (h *Handlers) Discovery(c *fiber.Ctx) error {
+func (h *Handlers) Discovery(c fiber.Ctx) error {
 	base := h.cfg.PublicIssuerURL
 	discovery := fiber.Map{
 		"issuer":                 base,
@@ -59,8 +60,8 @@ func (h *Handlers) Discovery(c *fiber.Ctx) error {
 	return c.JSON(discovery)
 }
 
-func (h *Handlers) JWKS(c *fiber.Ctx) error {
-	ctx := c.Context()
+func (h *Handlers) JWKS(c fiber.Ctx) error {
+	ctx := c
 	_, pub, meta, err := h.keyMgr.EnsureActiveKey(ctx)
 	if err != nil {
 		return h.oidcError(c, fiber.StatusInternalServerError, "server_error", "failed to load active signing key", "jwks_active_key_load_failed")
@@ -194,13 +195,13 @@ func (h *Handlers) IssueAccessToken(ctx context.Context, userID string, audience
 	return token, nil
 }
 
-func (h *Handlers) UserInfo(c *fiber.Ctx) error {
+func (h *Handlers) UserInfo(c fiber.Ctx) error {
 	userID, source, err := h.userIDFromSessionOrJWT(c)
 	if err != nil {
 		return h.oidcError(c, fiber.StatusUnauthorized, "invalid_token", "not authenticated", "userinfo_session_and_jwt_missing_or_invalid")
 	}
 
-	user, err := h.store.GetUserByID(c.Context(), userID)
+	user, err := h.store.GetUserByID(c, userID)
 	if err != nil {
 		return h.oidcError(c, fiber.StatusUnauthorized, "invalid_token", "not authenticated", "userinfo_user_not_found")
 	}
@@ -220,7 +221,7 @@ func (h *Handlers) UserInfo(c *fiber.Ctx) error {
 	return c.JSON(claims)
 }
 
-func (h *Handlers) userIDFromSessionOrJWT(c *fiber.Ctx) (string, string, error) {
+func (h *Handlers) userIDFromSessionOrJWT(c fiber.Ctx) (string, string, error) {
 	if userID, ok := session.UserIDFromContext(c); ok && userID != "" {
 		return userID, "session_cookie", nil
 	}
@@ -243,7 +244,7 @@ func (h *Handlers) userIDFromSessionOrJWT(c *fiber.Ctx) (string, string, error) 
 		return "", "", errors.New("bearer token is not a jwt")
 	}
 
-	if err := h.verifyJWT(c.Context(), token); err != nil {
+	if err := h.verifyJWT(c, token); err != nil {
 		return "", "", err
 	}
 	sub, err := extractJWTSub(token)
@@ -313,13 +314,13 @@ func looksLikeJWT(token string) bool {
 	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
 }
 
-func (h *Handlers) oidcError(c *fiber.Ctx, status int, oauthErr, description, cause string) error {
+func (h *Handlers) oidcError(c fiber.Ctx, status int, oauthErr, description, cause string) error {
 	level := slog.LevelWarn
 	if status >= 500 {
 		level = slog.LevelError
 	}
 	reqID := requestIDFromCtx(c)
-	slog.Log(c.Context(), level, "oidc_error_response",
+	slog.Log(c, level, "oidc_error_response",
 		"request_id", reqID,
 		"method", c.Method(),
 		"path", c.Path(),
@@ -335,8 +336,8 @@ func (h *Handlers) oidcError(c *fiber.Ctx, status int, oauthErr, description, ca
 	})
 }
 
-func requestIDFromCtx(c *fiber.Ctx) string {
-	reqID := c.GetRespHeader(fiber.HeaderXRequestID)
+func requestIDFromCtx(c fiber.Ctx) string {
+	reqID := requestid.FromContext(c)
 	if reqID == "" {
 		reqID = c.Get(fiber.HeaderXRequestID)
 	}

@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/luk3skyw4lker/go-idp/internal/session"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
 	"golang.org/x/crypto/bcrypt"
@@ -32,7 +32,7 @@ func NewLoginHandlers(store *postgres.Store, sessionTTL time.Duration, cookieSec
 	}
 }
 
-func (h *LoginHandlers) GetLogin(c *fiber.Ctx) error {
+func (h *LoginHandlers) GetLogin(c fiber.Ctx) error {
 	pendingID := c.Query("pending_id", "")
 	pendingSAMLID := c.Query("pending_saml_id", "")
 
@@ -52,7 +52,7 @@ func (h *LoginHandlers) GetLogin(c *fiber.Ctx) error {
 </html>`, formAction, pendingID, pendingSAMLID))
 }
 
-func (h *LoginHandlers) PostLogin(c *fiber.Ctx) error {
+func (h *LoginHandlers) PostLogin(c fiber.Ctx) error {
 	ctx := requestContext(c)
 
 	username := c.FormValue("username")
@@ -99,15 +99,15 @@ func (h *LoginHandlers) PostLogin(c *fiber.Ctx) error {
 			return fiber.ErrInternalServerError
 		}
 
-		return c.Redirect(h.redirectWithCode(req.RedirectURI, code, req.State))
+		return c.Redirect().To(h.redirectWithCode(req.RedirectURI, code, req.State))
 	}
 
 	// Resume SAML flow (full response creation is implemented in the SAML todo).
 	if pendingSAMLID != "" {
-		return c.Redirect(fmt.Sprintf("/saml/sso?pending_saml_id=%s", url.QueryEscape(pendingSAMLID)))
+		return c.Redirect().To(fmt.Sprintf("/saml/sso?pending_saml_id=%s", url.QueryEscape(pendingSAMLID)))
 	}
 
-	return c.Redirect("/")
+	return c.Redirect().To("/")
 }
 
 func (h *LoginHandlers) redirectWithCode(redirectURI, code, state string) string {
@@ -122,7 +122,7 @@ func (h *LoginHandlers) redirectWithCode(redirectURI, code, state string) string
 	return u.String()
 }
 
-func requestContext(c *fiber.Ctx) context.Context { return c.Context() }
+func requestContext(c fiber.Ctx) context.Context { return c }
 
 func randomToken(nBytes int) string {
 	b := make([]byte, nBytes)
