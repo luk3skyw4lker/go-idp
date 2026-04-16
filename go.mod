@@ -6,7 +6,7 @@ require (
 	github.com/beevik/etree v1.6.0
 	github.com/gofiber/fiber/v3 v3.1.0
 	github.com/ilyakaznacheev/cleanenv v1.5.0
-	github.com/jackc/pgx/v5 v5.8.0
+	github.com/jackc/pgx/v5 v5.9.0
 	github.com/luk3skyw4lker/go-jwt/v2 v2.0.2
 	github.com/pressly/goose/v3 v3.27.0
 	github.com/russellhaering/goxmldsig v1.6.0
