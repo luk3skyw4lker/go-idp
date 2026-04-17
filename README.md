@@ -1,8 +1,8 @@
+<h1 align="center">GoIdP</h1>
+
 <p align="center">
   <img src="./assets/goidp-icon.svg" alt="GoIdP icon" width="250" height="200" />
 </p>
-
-<h1 align="center">GoIdP</h1>
 
 <p align="center">
   <a href="https://github.com/luk3skyw4lker/go-idp/actions/workflows/build-and-test.yml"><img src="https://github.com/luk3skyw4lker/go-idp/actions/workflows/build-and-test.yml/badge.svg" alt="Build and Test"></a>
