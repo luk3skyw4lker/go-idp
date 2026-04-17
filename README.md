@@ -1,13 +1,19 @@
 # GoIdP
 
 <p align="center">
-  <img src="./assets/goidp-icon.svg" alt="GoIdP icon" width="96" />
+  <img src="./assets/goidp-icon.svg" alt="GoIdP icon" width="250" height="200" />
 </p>
+
+<p align="center">
+  <a href="https://github.com/luk3skyw4lker/go-idp/actions/workflows/build-and-test.yml"><img src="https://github.com/luk3skyw4lker/go-idp/actions/workflows/build-and-test.yml/badge.svg" alt="Build and Test"></a>
+</p>
+
 <p align="center">
   <strong>Self-hosted identity for local and pre-prod environments.</strong><br/>
   Spin up OIDC/OAuth2 + SAML in minutes with a Go + Fiber + Postgres stack.
 </p>
----
+
+##
 
 GoIdP is a developer-first Identity Provider built for teams that need realistic authentication flows without the enterprise setup tax.
 Use it to test:
