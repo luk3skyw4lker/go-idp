@@ -20,6 +20,7 @@ import (
 	"github.com/luk3skyw4lker/go-idp/internal/config"
 	"github.com/luk3skyw4lker/go-idp/internal/session"
 	"github.com/luk3skyw4lker/go-idp/internal/storage/postgres"
+	"github.com/jackc/pgx/v5"
 
 	dsig "github.com/russellhaering/goxmldsig"
 )
@@ -250,6 +251,25 @@ func (h *Handlers) buildAndReturnResponse(c fiber.Ctx, pending postgres.PendingS
 		return c.Status(fiber.StatusBadRequest).SendString("unknown Service Provider")
 	}
 
+	user, err := h.store.GetUserByID(c, userID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("saml_response_user_not_found",
+				"request_id", reqID,
+				"sp_issuer", pending.SPIssuer,
+				"user_id", userID,
+			)
+			return c.Status(fiber.StatusUnauthorized).SendString("user not found")
+		}
+		slog.Error("saml_response_user_lookup_failed",
+			"request_id", reqID,
+			"sp_issuer", pending.SPIssuer,
+			"user_id", userID,
+			"error", err.Error(),
+		)
+		return c.Status(fiber.StatusInternalServerError).SendString("failed to load user")
+	}
+
 	idpEntityID := h.cfg.PublicIssuerURL
 	acsURL := sp.AcsURL
 	audience := ""
@@ -297,7 +317,8 @@ func (h *Handlers) buildAndReturnResponse(c fiber.Ctx, pending postgres.PendingS
 
 	subjectEl := etree.NewElement("saml:Subject")
 	nameID := etree.NewElement("saml:NameID")
-	nameID.SetText(userID)
+	// SPs typically expect a human-stable identifier; session stores internal user UUID.
+	nameID.SetText(user.Username)
 	if sp.NameIDFormat != nil && *sp.NameIDFormat != "" {
 		nameID.CreateAttr("Format", *sp.NameIDFormat)
 	} else {
@@ -336,6 +357,28 @@ func (h *Handlers) buildAndReturnResponse(c fiber.Ctx, pending postgres.PendingS
 	authnCtx.AddChild(authnCtxClass)
 	authnStmt.AddChild(authnCtx)
 	assertion.AddChild(authnStmt)
+
+	attrStmt := etree.NewElement("saml:AttributeStatement")
+	addSAMLStringAttr := func(attrName, value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		attr := etree.NewElement("saml:Attribute")
+		attr.CreateAttr("Name", attrName)
+		attr.CreateAttr("NameFormat", "urn:oasis:names:tc:SAML:2.0:attrname-format:basic")
+		av := etree.NewElement("saml:AttributeValue")
+		av.SetText(value)
+		attr.AddChild(av)
+		attrStmt.AddChild(attr)
+	}
+	addSAMLStringAttr("username", user.Username)
+	addSAMLStringAttr("email", user.Email)
+	if strings.TrimSpace(user.DisplayName) != "" {
+		addSAMLStringAttr("displayName", user.DisplayName)
+	}
+	if len(attrStmt.ChildElements()) > 0 {
+		assertion.AddChild(attrStmt)
+	}
 
 	// Sign the assertion.
 	signedAssertion, err := h.signingCtx.SignEnveloped(assertion)

@@ -488,6 +488,13 @@ func TestSAML_SPInitiated_POST(t *testing.T) {
 	if !strings.Contains(string(samlRespXMLBytes), "samlp:Response") {
 		t.Fatalf("unexpected SAMLResponse payload")
 	}
+	samlXML := string(samlRespXMLBytes)
+	if !strings.Contains(samlXML, "<saml:NameID") || !strings.Contains(samlXML, ">"+s.username+"<") {
+		t.Fatalf("expected SAML NameID to contain login username %q", s.username)
+	}
+	if strings.Contains(samlXML, s.userID) {
+		t.Fatalf("SAMLResponse should not embed internal user id %q as identifier text (NameID uses username)", s.userID)
+	}
 }
 
 func mustJSON(t *testing.T, v any) string {
